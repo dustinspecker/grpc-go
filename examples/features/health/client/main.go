@@ -31,8 +31,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	pb "google.golang.org/grpc/examples/features/proto/echo"
 	_ "google.golang.org/grpc/health"
-	"google.golang.org/grpc/resolver"
-	"google.golang.org/grpc/resolver/manual"
 )
 
 var serviceConfig = `{
@@ -56,20 +54,21 @@ func callUnaryEcho(c pb.EchoClient) {
 func main() {
 	flag.Parse()
 
-	r := manual.NewBuilderWithScheme("whatever")
-	r.InitialState(resolver.State{
-		Addresses: []resolver.Address{
-			{Addr: "localhost:50051"},
-			{Addr: "localhost:50052"},
-		},
-	})
+	// r := manual.NewBuilderWithScheme("whatever")
+	// r.InitialState(resolver.State{
+	// 	Addresses: []resolver.Address{
+	// 		{Addr: "127.0.0.1:50050"},
+	// 		{Addr: "127.0.0.2:50050"},
+	// 	},
+	// })
 
-	address := fmt.Sprintf("%s:///unused", r.Scheme())
+	address := "localhost:50050"
+	// address := fmt.Sprintf("%s:///unused", r.Scheme())
 
 	options := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
-		grpc.WithResolvers(r),
+		// grpc.WithResolvers(r),
 		grpc.WithDefaultServiceConfig(serviceConfig),
 	}
 
