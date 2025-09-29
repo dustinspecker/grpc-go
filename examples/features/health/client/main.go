@@ -34,7 +34,7 @@ import (
 )
 
 var serviceConfig = `{
-	"loadBalancingPolicy": "round_robin",
+	"loadBalancingConfig": [{"teleport_pick_healthy":{}}],
 	"healthCheckConfig": {
 		"serviceName": ""
 	}

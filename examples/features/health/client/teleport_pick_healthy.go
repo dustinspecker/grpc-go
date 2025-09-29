@@ -23,7 +23,7 @@
 //
 // Notice: This package is EXPERIMENTAL and may be changed or removed in a
 // later release.
-package pickfirstleaf
+package main
 
 import (
 	"encoding/json"
@@ -35,11 +35,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc/balancer"
-	"google.golang.org/grpc/balancer/pickfirst/internal"
 	"google.golang.org/grpc/connectivity"
 	expstats "google.golang.org/grpc/experimental/stats"
 	"google.golang.org/grpc/grpclog"
-	"google.golang.org/grpc/internal/envconfig"
 	internalgrpclog "google.golang.org/grpc/internal/grpclog"
 	"google.golang.org/grpc/internal/pretty"
 	"google.golang.org/grpc/resolver"
@@ -47,10 +45,6 @@ import (
 )
 
 func init() {
-	if envconfig.NewPickFirstEnabled {
-		// Register as the default pick_first balancer.
-		Name = "pick_first"
-	}
 	balancer.Register(pickfirstBuilder{})
 }
 
@@ -59,27 +53,27 @@ func init() {
 type enableHealthListenerKeyType struct{}
 
 var (
-	logger = grpclog.Component("pick-first-leaf-lb")
+	logger = grpclog.Component("teleport-pick-healthy-lb")
 	// Name is the name of the pick_first_leaf balancer.
 	// It is changed to "pick_first" in init() if this balancer is to be
 	// registered as the default pickfirst.
-	Name                 = "pick_first_leaf"
+	Name                 = "teleport_pick_healthy"
 	disconnectionsMetric = expstats.RegisterInt64Count(expstats.MetricDescriptor{
-		Name:        "grpc.lb.pick_first.disconnections",
+		Name:        "grpc.lb.teleport_pick_healthy.disconnections",
 		Description: "EXPERIMENTAL. Number of times the selected subchannel becomes disconnected.",
 		Unit:        "{disconnection}",
 		Labels:      []string{"grpc.target"},
 		Default:     false,
 	})
 	connectionAttemptsSucceededMetric = expstats.RegisterInt64Count(expstats.MetricDescriptor{
-		Name:        "grpc.lb.pick_first.connection_attempts_succeeded",
+		Name:        "grpc.lb.teleport_pick_healthy.connection_attempts_succeeded",
 		Description: "EXPERIMENTAL. Number of successful connection attempts.",
 		Unit:        "{attempt}",
 		Labels:      []string{"grpc.target"},
 		Default:     false,
 	})
 	connectionAttemptsFailedMetric = expstats.RegisterInt64Count(expstats.MetricDescriptor{
-		Name:        "grpc.lb.pick_first.connection_attempts_failed",
+		Name:        "grpc.lb.teleport_pick_healthy.connection_attempts_failed",
 		Description: "EXPERIMENTAL. Number of failed connection attempts.",
 		Unit:        "{attempt}",
 		Labels:      []string{"grpc.target"},
@@ -265,7 +259,6 @@ func (b *pickfirstBalancer) UpdateClientConnState(state balancer.ClientConnState
 		// addresses within each endpoint. - A61
 		if cfg.ShuffleAddressList {
 			endpoints = append([]resolver.Endpoint{}, endpoints...)
-			internal.RandShuffle(len(endpoints), func(i, j int) { endpoints[i], endpoints[j] = endpoints[j], endpoints[i] })
 		}
 
 		// "Flatten the list by concatenating the ordered list of addresses for
@@ -283,7 +276,6 @@ func (b *pickfirstBalancer) UpdateClientConnState(state balancer.ClientConnState
 		newAddrs = state.ResolverState.Addresses
 		if cfg.ShuffleAddressList {
 			newAddrs = append([]resolver.Address{}, newAddrs...)
-			internal.RandShuffle(len(newAddrs), func(i, j int) { newAddrs[i], newAddrs[j] = newAddrs[j], newAddrs[i] })
 		}
 	}
 
@@ -553,20 +545,22 @@ func (b *pickfirstBalancer) scheduleNextConnectionLocked() {
 	}
 	curAddr := b.addressList.currentAddress()
 	cancelled := false // Access to this is protected by the balancer's mutex.
-	closeFn := internal.TimeAfterFunc(connectionDelayInterval, func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		// If the scheduled task is cancelled while acquiring the mutex, return.
-		if cancelled {
-			return
-		}
-		if b.logger.V(2) {
-			b.logger.Infof("Happy Eyeballs timer expired while waiting for connection to %q.", curAddr.Addr)
-		}
-		if b.addressList.increment() {
-			b.requestConnectionLocked()
-		}
-	})
+	closeFn := func() *time.Timer {
+		return time.AfterFunc(connectionDelayInterval, func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			// If the scheduled task is cancelled while acquiring the mutex, return.
+			if cancelled {
+				return
+			}
+			if b.logger.V(2) {
+				b.logger.Infof("Happy Eyeballs timer expired while waiting for connection to %q.", curAddr.Addr)
+			}
+			if b.addressList.increment() {
+				b.requestConnectionLocked()
+			}
+		})
+	}
 	// Access to the cancellation callback held by the balancer is guarded by
 	// the balancer's mutex, so it's safe to set the boolean from the callback.
 	b.cancelConnectionTimer = sync.OnceFunc(func() {
