@@ -129,11 +129,6 @@ func (pickfirstBuilder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalan
 
 type pfConfig struct {
 	serviceconfig.LoadBalancingConfig `json:"-"`
-
-	// If set to true, instructs the LB policy to shuffle the order of the list
-	// of endpoints received from the name resolver before attempting to
-	// connect to them.
-	ShuffleAddressList bool `json:"shuffleAddressList"`
 }
 
 // scData keeps track of the current state of the subConn.
@@ -245,13 +240,6 @@ func (b *pickfirstBalancer) UpdateClientConnState(state balancer.ClientConnState
 
 	var newAddrs []resolver.Address
 	if endpoints := state.ResolverState.Endpoints; len(endpoints) != 0 {
-		// Perform the optional shuffling described in gRFC A62. The shuffling
-		// will change the order of endpoints but not touch the order of the
-		// addresses within each endpoint. - A61
-		if cfg.ShuffleAddressList {
-			endpoints = append([]resolver.Endpoint{}, endpoints...)
-		}
-
 		// "Flatten the list by concatenating the ordered list of addresses for
 		// each of the endpoints, in order." - A61
 		for _, endpoint := range endpoints {
@@ -265,9 +253,6 @@ func (b *pickfirstBalancer) UpdateClientConnState(state balancer.ClientConnState
 		// endpoints properly. Once all balancers correctly forward endpoints
 		// down, can delete this else conditional.
 		newAddrs = state.ResolverState.Addresses
-		if cfg.ShuffleAddressList {
-			newAddrs = append([]resolver.Address{}, newAddrs...)
-		}
 	}
 
 	// If an address appears in multiple endpoints or in the same endpoint
