@@ -127,13 +127,6 @@ func (pickfirstBuilder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalan
 	return cfg, nil
 }
 
-// EnableHealthListener updates the state to configure pickfirst for using a
-// generic health listener.
-func EnableHealthListener(state resolver.State) resolver.State {
-	state.Attributes = state.Attributes.WithValue(enableHealthListenerKeyType{}, true)
-	return state
-}
-
 type pfConfig struct {
 	serviceconfig.LoadBalancingConfig `json:"-"`
 
@@ -198,7 +191,6 @@ type pickfirstBalancer struct {
 	firstPass             bool
 	numTF                 int
 	cancelConnectionTimer func()
-	healthCheckingEnabled bool
 }
 
 // ResolverError is called by the ClientConn when the name resolver produces
@@ -242,7 +234,6 @@ func (b *pickfirstBalancer) UpdateClientConnState(state balancer.ClientConnState
 		b.resolverErrorLocked(errors.New("produced zero addresses"))
 		return balancer.ErrBadResolverState
 	}
-	b.healthCheckingEnabled = true
 	cfg, ok := state.BalancerConfig.(pfConfig)
 	if state.BalancerConfig != nil && !ok {
 		return fmt.Errorf("pickfirst: received illegal BalancerConfig (type %T): %v: %w", state.BalancerConfig, state.BalancerConfig, balancer.ErrBadResolverState)
@@ -599,18 +590,6 @@ func (b *pickfirstBalancer) updateSubConnState(sd *scData, newState balancer.Sub
 			// This should not fail as we should have only one SubConn after
 			// entering READY. The SubConn should be present in the addressList.
 			b.logger.Errorf("Address %q not found address list in  %v", sd.addr, b.addressList.addresses)
-			return
-		}
-		if !b.healthCheckingEnabled {
-			if b.logger.V(2) {
-				b.logger.Infof("SubConn %p reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.", sd.subConn)
-			}
-
-			sd.effectiveState = connectivity.Ready
-			b.updateBalancerState(balancer.State{
-				ConnectivityState: connectivity.Ready,
-				Picker:            &picker{result: balancer.PickResult{SubConn: sd.subConn}},
-			})
 			return
 		}
 		if b.logger.V(2) {
