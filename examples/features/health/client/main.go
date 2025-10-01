@@ -34,7 +34,7 @@ import (
 )
 
 var serviceConfig = `{
-	"loadBalancingConfig": [{"teleport_pick_healthy":{}}],
+	"loadBalancingConfig": [{"dustin":{}}],
 	"healthCheckConfig": {
 		"serviceName": ""
 	}

@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"sync"
@@ -291,6 +292,7 @@ func (b *pickfirstBalancer) UpdateClientConnState(state balancer.ClientConnState
 		})
 		b.startFirstPassLocked()
 	} else if b.state == connectivity.TransientFailure {
+		b.logger.Infof("UpdateClientConnState transient failure")
 		// If we're in TRANSIENT_FAILURE, we stay in TRANSIENT_FAILURE until
 		// we're READY. See A62.
 		b.startFirstPassLocked()
@@ -491,6 +493,7 @@ func (b *pickfirstBalancer) requestConnectionLocked() {
 			b.scheduleNextConnectionLocked()
 			return
 		case connectivity.TransientFailure:
+			b.logger.Infof("requestConnectionLocked transient failure")
 			// The SubConn is being re-used and failed during a previous pass
 			// over the addressList. It has not completed backoff yet.
 			// Mark it as having failed and try the next address.
@@ -564,6 +567,7 @@ func (b *pickfirstBalancer) updateSubConnState(sd *scData, newState balancer.Sub
 
 	// Record a connection attempt when exiting CONNECTING.
 	if newState.ConnectivityState == connectivity.TransientFailure {
+		b.logger.Infof("updateSubConnHealthState transient failure")
 		sd.connectionFailedInFirstPass = true
 		connectionAttemptsFailedMetric.Record(b.metricsRecorder, 1, b.target)
 	}
@@ -637,6 +641,7 @@ func (b *pickfirstBalancer) updateSubConnState(sd *scData, newState balancer.Sub
 				})
 			}
 		case connectivity.TransientFailure:
+			b.logger.Infof("updateSubConnHealthState transient failure")
 			sd.lastErr = newState.ConnectionError
 			sd.effectiveState = connectivity.TransientFailure
 			// Since we're re-using common SubConns while handling resolver
@@ -662,6 +667,7 @@ func (b *pickfirstBalancer) updateSubConnState(sd *scData, newState balancer.Sub
 	// We have finished the first pass, keep re-connecting failing SubConns.
 	switch newState.ConnectivityState {
 	case connectivity.TransientFailure:
+		b.logger.Infof("transient failure")
 		b.numTF = (b.numTF + 1) % b.subConns.Len()
 		sd.lastErr = newState.ConnectionError
 		if b.numTF%b.subConns.Len() == 0 {
@@ -729,6 +735,7 @@ func (b *pickfirstBalancer) updateSubConnHealthState(sd *scData, state balancer.
 			Picker:            &picker{result: balancer.PickResult{SubConn: sd.subConn}},
 		})
 	case connectivity.TransientFailure:
+		b.logger.Infof("updateSubConnHealthState transient failure")
 		b.updateBalancerState(balancer.State{
 			ConnectivityState: connectivity.TransientFailure,
 			Picker:            &picker{err: fmt.Errorf("pickfirst: health check failure: %v", state.ConnectionError)},
@@ -772,6 +779,7 @@ type picker struct {
 }
 
 func (p *picker) Pick(balancer.PickInfo) (balancer.PickResult, error) {
+	log.Println("picker.Pick called")
 	return p.result, p.err
 }
 
@@ -782,6 +790,7 @@ type idlePicker struct {
 }
 
 func (i *idlePicker) Pick(balancer.PickInfo) (balancer.PickResult, error) {
+	log.Println("idlePicker.Pick called")
 	i.exitIdle()
 	return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
 }

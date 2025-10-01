@@ -72,6 +72,11 @@ func main() {
 		next := healthpb.HealthCheckResponse_SERVING
 
 		for {
+			if next == healthpb.HealthCheckResponse_NOT_SERVING {
+				log.Println("not healthy")
+			} else {
+				log.Println("healthy")
+			}
 			healthcheck.SetServingStatus(system, next)
 
 			if next == healthpb.HealthCheckResponse_SERVING {
