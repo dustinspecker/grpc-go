@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/connectivity"
@@ -30,13 +31,15 @@ func (dustinBuilder) Name() string {
 }
 
 type dustinBalancer struct {
-	cc     balancer.ClientConn
-	sc     balancer.SubConn
-	logger *slog.Logger
+	cc        balancer.ClientConn
+	sc        balancer.SubConn
+	pendingSC balancer.SubConn
+	logger    *slog.Logger
 
 	addresses []resolver.Address
+	state     connectivity.State
 
-	state connectivity.State
+	mu sync.Mutex
 }
 
 func (db *dustinBalancer) Close() {
@@ -54,21 +57,25 @@ func (db *dustinBalancer) ResolverError(err error) {
 }
 
 func (db *dustinBalancer) UpdateClientConnState(state balancer.ClientConnState) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
 	db.logger.Info("UpdateClientConnState called")
 
 	db.addresses = state.ResolverState.Addresses
 
 	sc, err := db.cc.NewSubConn(state.ResolverState.Addresses, balancer.NewSubConnOptions{
 		HealthCheckEnabled: true,
-		StateListener:      db.stateListener,
+		StateListener:      db.singleStateListener,
 	})
 	if err != nil {
 		return fmt.Errorf("error creating sub connection: %w", err)
 	}
+
 	sc.Connect()
+
 	db.sc = sc
 
-	// TODO: have state on the balancer itself
 	db.cc.UpdateState(balancer.State{
 		ConnectivityState: connectivity.Connecting,
 		Picker: dustinPicker{
@@ -79,40 +86,88 @@ func (db *dustinBalancer) UpdateClientConnState(state balancer.ClientConnState) 
 	return nil
 }
 
-func (db *dustinBalancer) stateListener(state balancer.SubConnState) {
-	db.logger.Info("StateListener invoked", slog.String("state", state.ConnectivityState.String()))
+func (db *dustinBalancer) singleStateListener(state balancer.SubConnState) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
-	if db.state == connectivity.Ready && state.ConnectivityState == connectivity.TransientFailure {
+	db.logger.Info("single StateListener invoked", slog.String("state", state.ConnectivityState.String()))
+
+	if db.state == connectivity.Ready && state.ConnectivityState == connectivity.TransientFailure && db.pendingSC == nil {
 		db.logger.Info("creating new subconnection")
 
-		// TODO: get new addresses?
 		sc, err := db.cc.NewSubConn(db.addresses, balancer.NewSubConnOptions{
 			HealthCheckEnabled: true,
-			StateListener:      db.stateListener,
+			StateListener:      db.migrateStateListener,
 		})
 		if err != nil {
-			db.logger.Error("error creating new subconnection after transient failure: %v", err)
-
-			return
+			db.logger.Error("error creating new subconnection", slog.String("err", err.Error()))
 		}
 
 		sc.Connect()
 
-		oldSc := db.sc
-		oldSc.Shutdown()
+		db.pendingSC = sc
+	} else if state.ConnectivityState == connectivity.Ready && db.pendingSC != nil {
+		db.logger.Info("subconnection became healthy again, so shutting down new subconnection")
 
-		db.sc = sc
+		db.pendingSC.RegisterHealthListener(func(balancer.SubConnState) {})
+		db.pendingSC.Shutdown()
+	}
 
-		db.state = connectivity.Connecting
+	db.state = state.ConnectivityState
+}
+
+func (db *dustinBalancer) migrateStateListener(state balancer.SubConnState) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	db.logger.Info("migrate StateListener invoked", slog.String("state", state.ConnectivityState.String()))
+
+	if state.ConnectivityState == connectivity.Ready && db.pendingSC != nil {
+		db.logger.Info("new subconnection is ready, so migrating")
+
+		db.sc.RegisterHealthListener(func(balancer.SubConnState) {})
+
+		db.pendingSC.RegisterHealthListener(db.singleStateListener)
 
 		db.cc.UpdateState(balancer.State{
-			ConnectivityState: connectivity.Connecting,
+			ConnectivityState: connectivity.Ready,
 			Picker: dustinPicker{
-				sc: db.sc,
+				sc: db.pendingSC,
 			},
 		})
-	} else {
-		db.state = state.ConnectivityState
+
+		db.sc.Shutdown()
+
+		db.sc = db.pendingSC
+
+		db.pendingSC = nil
+
+		db.state = connectivity.Ready
+	} else if state.ConnectivityState == connectivity.TransientFailure && db.pendingSC != nil {
+		db.logger.Info("new subconnection hit failure, so shutting down")
+
+		db.pendingSC.Shutdown()
+
+		sc, err := db.cc.NewSubConn(db.addresses, balancer.NewSubConnOptions{
+			HealthCheckEnabled: true,
+			StateListener:      db.migrateStateListener,
+		})
+		if err != nil {
+			db.logger.Error("error creating new subconnection", slog.String("err", err.Error()))
+		}
+
+		sc.Connect()
+
+		db.pendingSC = sc
+
+		db.cc.UpdateState(balancer.State{
+			ConnectivityState: connectivity.Ready,
+			Picker: dustinPicker{
+				sc: db.pendingSC,
+			},
+		})
+	} else if state.ConnectivityState == connectivity.Shutdown {
+		db.logger.Info("new subconnection has completed shutdown")
 	}
 }
 
