@@ -143,27 +143,59 @@ func (db *dustinBalancer) migrateStateListener(state balancer.SubConnState) {
 		db.pendingSC = nil
 
 		db.state = connectivity.Ready
-	} else if state.ConnectivityState == connectivity.TransientFailure && db.pendingSC != nil {
-		db.logger.Info("new subconnection hit failure, so shutting down")
+	} else if state.ConnectivityState == connectivity.TransientFailure {
+		if db.pendingSC != nil {
+			db.logger.Info("new subconnection hit failure, so shutting down")
 
-		db.pendingSC.Shutdown()
+			db.logger.Info("seconday sleeping")
+			time.Sleep(5 * time.Second)
+
+			db.pendingSC.RegisterHealthListener(func(balancer.SubConnState) {})
+			db.pendingSC.Shutdown()
+
+			sc, err := db.cc.NewSubConn(db.addresses, balancer.NewSubConnOptions{
+				HealthCheckEnabled: true,
+				StateListener:      db.migrateStateListener,
+			})
+			if err != nil {
+				db.logger.Error("error creating new subconnection", slog.String("err", err.Error()))
+			}
+
+			sc.Connect()
+
+			db.pendingSC = sc
+
+			db.cc.UpdateState(balancer.State{
+				ConnectivityState: connectivity.Ready,
+				Picker: dustinPicker{
+					sc: db.pendingSC,
+				},
+			})
+
+			return
+		}
+
+		db.logger.Info("primary connection hit failure, shutting down")
+
+		db.sc.RegisterHealthListener(func(balancer.SubConnState) {})
+		db.sc.Shutdown()
 
 		sc, err := db.cc.NewSubConn(db.addresses, balancer.NewSubConnOptions{
 			HealthCheckEnabled: true,
-			StateListener:      db.migrateStateListener,
+			StateListener:      db.singleStateListener,
 		})
 		if err != nil {
-			db.logger.Error("error creating new subconnection", slog.String("err", err.Error()))
+			db.logger.Error("error creating new primary subconnection", slog.String("err", err.Error()))
 		}
 
 		sc.Connect()
 
-		db.pendingSC = sc
+		db.sc = sc
 
 		db.cc.UpdateState(balancer.State{
 			ConnectivityState: connectivity.Ready,
 			Picker: dustinPicker{
-				sc: db.pendingSC,
+				sc: db.sc,
 			},
 		})
 	} else if state.ConnectivityState == connectivity.Shutdown {
