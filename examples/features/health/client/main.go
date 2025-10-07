@@ -25,6 +25,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -40,8 +43,8 @@ var serviceConfig = `{
 	}
 }`
 
-func callUnaryEcho(c pb.EchoClient) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+func callUnaryEcho(ctx context.Context, c pb.EchoClient) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	r, err := c.UnaryEcho(ctx, &pb.EchoRequest{})
 	if err != nil {
@@ -80,8 +83,84 @@ func main() {
 
 	echoClient := pb.NewEchoClient(conn)
 
-	for {
-		callUnaryEcho(echoClient)
-		time.Sleep(time.Second)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	stream, err := echoClient.BidirectionalStreamingEcho(ctx)
+	if err != nil {
+		fmt.Println(fmt.Sprintf("error creating streamer: %v", err))
+
+		return
 	}
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		done := false
+		for !done {
+			select {
+			case <-ctx.Done():
+				done = true
+			default:
+				callUnaryEcho(ctx, echoClient)
+				time.Sleep(time.Second)
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				resp, err := stream.Recv()
+				if err != nil {
+					fmt.Println(fmt.Sprintf("error receiving message: %v", err))
+
+					cancel()
+
+					return
+				}
+
+				fmt.Println(resp.Message)
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		done := false
+		i := 0
+		for !done {
+			select {
+			case <-ctx.Done():
+				done = true
+			default:
+				req := pb.EchoRequest{
+					Message: fmt.Sprintf("hey %d", i),
+				}
+				if err := stream.Send(&req); err != nil {
+					fmt.Println(fmt.Sprintf("error sending request: %v", err))
+
+					cancel()
+				}
+
+				time.Sleep(1 * time.Second)
+				i++
+			}
+		}
+
+		stream.CloseSend()
+	}()
+
+	wg.Wait()
 }

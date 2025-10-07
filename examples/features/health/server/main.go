@@ -24,6 +24,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"time"
@@ -50,6 +51,41 @@ func (e *echoServer) UnaryEcho(context.Context, *pb.EchoRequest) (*pb.EchoRespon
 	return &pb.EchoResponse{
 		Message: fmt.Sprintf("hello from localhost:%d", *port),
 	}, nil
+}
+
+func (e *echoServer) ServerStreamingEcho(in *pb.EchoRequest, stream pb.Echo_ServerStreamingEchoServer) error {
+	fmt.Printf("--- ServerStreamingEcho ---\n")
+
+	// Read requests and send responses.
+	for {
+		fmt.Printf("echo message %v\n", in.Message)
+		err := stream.Send(&pb.EchoResponse{Message: in.Message})
+		if err != nil {
+			return err
+		}
+
+		time.Sleep(5 * time.Second)
+	}
+	return nil
+}
+
+func (e *echoServer) BidirectionalStreamingEcho(stream pb.Echo_BidirectionalStreamingEchoServer) error {
+	fmt.Printf("--- BidirectionalStreamingEcho ---\n")
+
+	// Read requests and send responses.
+	for {
+		in, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("request received %v, sending echo\n", in)
+		if err := stream.Send(&pb.EchoResponse{Message: in.Message}); err != nil {
+			return err
+		}
+	}
 }
 
 var _ pb.EchoServer = &echoServer{}
