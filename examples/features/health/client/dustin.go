@@ -122,6 +122,13 @@ func (db *dustinBalancer) primaryStateListener(state balancer.SubConnState) {
 				sc: db.sc,
 			},
 		})
+	} else if state.ConnectivityState == connectivity.Ready {
+		db.cc.UpdateState(balancer.State{
+			ConnectivityState: connectivity.Ready,
+			Picker: dustinPicker{
+				sc: db.sc,
+			},
+		})
 	}
 }
 
