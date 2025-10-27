@@ -37,7 +37,7 @@ import (
 )
 
 var serviceConfig = `{
-	"loadBalancingConfig": [{"dustin":{}}],
+	"loadBalancingConfig": [{"tlb":{}}],
 	"healthCheckConfig": {
 		"serviceName": ""
 	}
