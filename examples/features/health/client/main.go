@@ -36,12 +36,12 @@ import (
 	_ "google.golang.org/grpc/health"
 )
 
-var serviceConfig = `{
-	"loadBalancingConfig": [{"tlb":{}}],
+var serviceConfig = fmt.Sprintf(`{
+	"loadBalancingConfig": [{"%s":{}}],
 	"healthCheckConfig": {
 		"serviceName": ""
 	}
-}`
+}`, Name)
 
 func callUnaryEcho(ctx context.Context, c pb.EchoClient) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
