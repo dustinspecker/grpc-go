@@ -27,9 +27,7 @@ func (teleportPickHealthyBuilder) Build(cc balancer.ClientConn, opts balancer.Bu
 	fmt.Println("tlbBuilder.Build called")
 
 	b := teleportPickHealthyBalancer{
-		cc: &wrappedClientConn{
-			ClientConn: cc,
-		},
+		cc:   cc,
 		opts: opts,
 	}
 
@@ -47,22 +45,6 @@ func (teleportPickHealthyBuilder) Build(cc balancer.ClientConn, opts balancer.Bu
 	b.current = &wb
 
 	return &b
-}
-
-type wrappedClientConn struct {
-	balancer.ClientConn
-}
-
-func (w *wrappedClientConn) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
-	fmt.Println("wcc.NewSubConn called")
-
-	return w.ClientConn.NewSubConn(addrs, opts)
-}
-
-func (w *wrappedClientConn) UpdateState(state balancer.State) {
-	fmt.Println("w.UpdateState called")
-
-	w.ClientConn.UpdateState(state)
 }
 
 func (teleportPickHealthyBuilder) Name() string {
