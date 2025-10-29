@@ -2,7 +2,8 @@ package main
 
 import (
 	"errors"
-	"fmt"
+	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -24,15 +25,17 @@ func init() {
 type teleportPickHealthyBuilder struct{}
 
 func (teleportPickHealthyBuilder) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Balancer {
-	fmt.Println("tlbBuilder.Build called")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	b := teleportPickHealthyBalancer{
 		cc:   cc,
 		opts: opts,
+		log:  log,
 	}
 
 	wb := wrappedBalancer{
 		ClientConn: cc,
+		log:        log,
 
 		tlb:      &b,
 		subConns: make(map[balancer.SubConn]bool, 0),
@@ -48,14 +51,13 @@ func (teleportPickHealthyBuilder) Build(cc balancer.ClientConn, opts balancer.Bu
 }
 
 func (teleportPickHealthyBuilder) Name() string {
-	fmt.Println("tlbBuilder.Name called")
-
 	return Name
 }
 
 type teleportPickHealthyBalancer struct {
 	cc   balancer.ClientConn
 	opts balancer.BuildOptions
+	log  *slog.Logger
 
 	current *wrappedBalancer
 	pending *wrappedBalancer
@@ -66,7 +68,7 @@ type teleportPickHealthyBalancer struct {
 }
 
 func (t *teleportPickHealthyBalancer) Close() {
-	fmt.Println("tlbBalancer.Close called")
+	t.log.Info("tlbBalancer.Close called")
 
 	t.mu.Lock()
 
@@ -88,7 +90,7 @@ func (t *teleportPickHealthyBalancer) Close() {
 }
 
 func (t *teleportPickHealthyBalancer) ExitIdle() {
-	fmt.Println("tlbBalancer.ExitIdle called")
+	t.log.Info("tlbBalancer.ExitIdle called")
 	bal := t.newestBalancer()
 
 	if bal == nil {
@@ -99,7 +101,7 @@ func (t *teleportPickHealthyBalancer) ExitIdle() {
 }
 
 func (t *teleportPickHealthyBalancer) ResolverError(err error) {
-	fmt.Println("tlbBalancer.ResolverError called")
+	t.log.Info("tlbBalancer.ResolverError called")
 	bal := t.newestBalancer()
 
 	if bal == nil {
@@ -115,7 +117,7 @@ func (t *teleportPickHealthyBalancer) ResolverError(err error) {
 }
 
 func (t *teleportPickHealthyBalancer) UpdateClientConnState(state balancer.ClientConnState) error {
-	fmt.Println("tlbBalancer.UpdateClientConnState called")
+	t.log.Info("tlbBalancer.UpdateClientConnState called")
 	bal := t.newestBalancer()
 
 	if bal == nil {
@@ -130,7 +132,7 @@ func (t *teleportPickHealthyBalancer) UpdateClientConnState(state balancer.Clien
 }
 
 func (t *teleportPickHealthyBalancer) UpdateSubConnState(sc balancer.SubConn, scs balancer.SubConnState) {
-	fmt.Printf("tlbBalancer.UpdateSubConnState called with %s\n", scs.ConnectivityState)
+	t.log.Info("tlbBalancer.UpdateSubConnState called", slog.String("state", scs.ConnectivityState.String()))
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -170,6 +172,7 @@ func (t *teleportPickHealthyBalancer) newestBalancer() balancer.Balancer {
 type wrappedBalancer struct {
 	balancer.ClientConn
 	balancer.Balancer
+	log *slog.Logger
 
 	tlb *teleportPickHealthyBalancer
 
@@ -177,7 +180,7 @@ type wrappedBalancer struct {
 }
 
 func (t *wrappedBalancer) Close() {
-	fmt.Println("tlbWrappedBalancer.Close called")
+	t.log.Info("tlbWrappedBalancer.Close called")
 	if t == nil {
 		return
 	}
@@ -188,9 +191,8 @@ func (t *wrappedBalancer) Close() {
 }
 
 func (t *wrappedBalancer) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
-	fmt.Println("tlbWrappedBalancer.NewSubConn called")
+	t.log.Info("tlbWrappedBalancer.NewSubConn called")
 	t.tlb.mu.Lock()
-	fmt.Println("lock acquired")
 
 	if t != t.tlb.current && t != t.tlb.pending {
 		t.tlb.mu.Unlock()
@@ -204,7 +206,7 @@ func (t *wrappedBalancer) NewSubConn(addrs []resolver.Address, opts balancer.New
 	var sc balancer.SubConn
 
 	opts.StateListener = func(state balancer.SubConnState) {
-		fmt.Printf("state listener called with %s\n", state.ConnectivityState)
+		t.log.Info("state listener called", slog.String("state", state.ConnectivityState.String()))
 
 		t.tlb.UpdateSubConnState(sc, state)
 
@@ -224,7 +226,7 @@ func (t *wrappedBalancer) NewSubConn(addrs []resolver.Address, opts balancer.New
 }
 
 func (t *wrappedBalancer) ResolveNow(opts resolver.ResolveNowOptions) {
-	fmt.Println("tlbWrappedBalancer.ResolveNow called")
+	t.log.Info("tlbWrappedBalancer.ResolveNow called")
 	if t != t.tlb.newestBalancer() {
 		return
 	}
@@ -233,12 +235,12 @@ func (t *wrappedBalancer) ResolveNow(opts resolver.ResolveNowOptions) {
 }
 
 func (t *wrappedBalancer) RemoveSubConn(sc balancer.SubConn) {
-	fmt.Println("tlbWrappedBalancer.RemoveSubConn called")
+	t.log.Info("tlbWrappedBalancer.RemoveSubConn called")
 	sc.Shutdown()
 }
 
 func (t *wrappedBalancer) UpdateAddresses(sc balancer.SubConn, addrs []resolver.Address) {
-	fmt.Println("tlbWrappedBalancer.UpdateAddresses called")
+	t.log.Info("tlbWrappedBalancer.UpdateAddresses called")
 	t.tlb.mu.Lock()
 	if t != t.tlb.current && t != t.tlb.pending {
 		t.tlb.mu.Unlock()
@@ -251,13 +253,13 @@ func (t *wrappedBalancer) UpdateAddresses(sc balancer.SubConn, addrs []resolver.
 }
 
 func (t *wrappedBalancer) UpdateSubConnState(sc balancer.SubConn, scs balancer.SubConnState) {
-	fmt.Println("tlbWrappedBalancer.UpdateSubConnState called")
+	t.log.Info("tlbWrappedBalancer.UpdateSubConnState called")
 
 	t.Balancer.UpdateSubConnState(sc, scs)
 }
 
 func (t *wrappedBalancer) UpdateState(state balancer.State) {
-	fmt.Printf("tlbWrappedBalancer.UpdateState called with %s\n", state.ConnectivityState)
+	t.log.Info("tlbWrappedBalancer.UpdateState called", slog.String("state", state.ConnectivityState.String()))
 	t.tlb.mu.Lock()
 
 	if t != t.tlb.current && t != t.tlb.pending {
@@ -267,9 +269,10 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 
 	if t == t.tlb.current {
 		if state.ConnectivityState == connectivity.TransientFailure {
-			fmt.Println("creating new balancer")
+			t.log.Info("creating new balancer")
 			wb := wrappedBalancer{
 				ClientConn: t.tlb.cc,
+				log:        t.log,
 
 				tlb:      t.tlb,
 				subConns: make(map[balancer.SubConn]bool, 0),
@@ -287,7 +290,7 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 				ResolverState: pickfirstleaf.EnableHealthListener(t.tlb.resolvedState),
 			})
 		} else if state.ConnectivityState == connectivity.Ready && t.tlb.pending != nil {
-			fmt.Println("original balancer became healthy, closing pending balancer")
+			t.log.Info("original balancer became healthy, closing pending balancer")
 
 			pending := t.tlb.pending
 
@@ -300,9 +303,9 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 			t.tlb.mu.Unlock()
 		}
 	} else if t == t.tlb.pending {
-		fmt.Println("update state called for pending")
+		t.log.Info("update state called for pending")
 		if state.ConnectivityState == connectivity.Ready {
-			fmt.Println("migrating to new balancer")
+			t.log.Info("migrating to new balancer")
 
 			current := t.tlb.current
 
@@ -313,7 +316,7 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 
 			current.Close()
 		} else if state.ConnectivityState == connectivity.TransientFailure {
-			fmt.Println("new balancer is unhealthy, recreating new balancer")
+			t.log.Info("new balancer is unhealthy, recreating new balancer")
 
 			t.tlb.pending.Close()
 
@@ -325,6 +328,7 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 
 			wb := wrappedBalancer{
 				ClientConn: t.tlb.cc,
+				log:        t.log,
 
 				tlb:      t.tlb,
 				subConns: make(map[balancer.SubConn]bool, 0),
@@ -345,7 +349,7 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 			t.tlb.mu.Unlock()
 		}
 	} else {
-		fmt.Println("UpdateState called for invalid balancer")
+		t.log.Info("UpdateState called for invalid balancer")
 		t.tlb.mu.Unlock()
 	}
 
