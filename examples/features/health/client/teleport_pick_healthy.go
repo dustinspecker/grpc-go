@@ -238,10 +238,6 @@ func (t *wrappedBalancer) UpdateAddresses(sc balancer.SubConn, addrs []resolver.
 	t.tlb.cc.UpdateAddresses(sc, addrs)
 }
 
-func (t *wrappedBalancer) UpdateSubConnState(sc balancer.SubConn, scs balancer.SubConnState) {
-	t.Balancer.UpdateSubConnState(sc, scs)
-}
-
 func (t *wrappedBalancer) UpdateState(state balancer.State) {
 	t.tlb.mu.Lock()
 
