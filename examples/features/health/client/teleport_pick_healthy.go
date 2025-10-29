@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	// Name is used by gRPC client service configuration to select this load balancer.
 	Name = "teleport_pick_healthy"
 )
 
@@ -22,8 +23,10 @@ func init() {
 	balancer.Register(teleportPickHealthyBuilder{})
 }
 
+// teleportPickHealthyBuilder is used by gRPC clients to build a [teleportPickHealthyBalancer]
 type teleportPickHealthyBuilder struct{}
 
+// Build creates a [teleportPickHealthyBalancer] with an underlying pick_first_leaf balancer.
 func (teleportPickHealthyBuilder) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Balancer {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
@@ -50,10 +53,27 @@ func (teleportPickHealthyBuilder) Build(cc balancer.ClientConn, opts balancer.Bu
 	return &b
 }
 
+// Name returns the name of the load balancer that will be produced by this builder.
 func (teleportPickHealthyBuilder) Name() string {
 	return Name
 }
 
+// teleportPickHealthyBalancer balances client traffic using underlying pick_first_leaf balancers.
+//
+// teleportPickHealthyBalancer creates a pick_first_leaf balancer and enables health checking. When
+// the balancer's state reports a transient failure (failing health check) then teleportPickHealthyBalancer will
+// create a new pick_first_leaf balancer. Once the new pick_first_leaf balancer's [balancer.SubConn] becomes healthy
+// then teleportPickHealthyBalancer will use the new balancer for new RPCs. It'll then close the previous pick_first_leaf
+// balancer, which gracefully shuts down waiting for all current RPCs to complete before completely shutting down its
+// subconnection.
+//
+// The pick_first_leaf load balancer iterates through resolved addresses/endpoints until it is able to successfully connect
+// to one. The pick_first_leaf load balancer assumes that each address/endpoint ties to one server. This falls apart when
+// the resolved address/endpoint is actually a load balancer. The pick_first_leaf will not try to establish a new connection
+// to the same address/endpoint when health check fails because it assumes there is only 1 server for that address/endpoint and
+// its unhealthy.
+// This is where teleportPickHealthyBalancer comes into play. By creating a new pick_first_leaf load balancer, each resolved
+// aaddress/endpoint is tried again. This provides the opportunity for the load balancer to forward the request to another server.
 type teleportPickHealthyBalancer struct {
 	cc   balancer.ClientConn
 	opts balancer.BuildOptions
@@ -67,6 +87,7 @@ type teleportPickHealthyBalancer struct {
 	mu sync.Mutex
 }
 
+// Close closes the current and pending underlying pick_first_leaf balancers.
 func (t *teleportPickHealthyBalancer) Close() {
 	t.mu.Lock()
 
@@ -87,6 +108,7 @@ func (t *teleportPickHealthyBalancer) Close() {
 	}
 }
 
+// ExitIdle invokes ExitIdle on the most recently created load balancer.
 func (t *teleportPickHealthyBalancer) ExitIdle() {
 	bal := t.newestBalancer()
 
@@ -97,6 +119,10 @@ func (t *teleportPickHealthyBalancer) ExitIdle() {
 	bal.ExitIdle()
 }
 
+// ResolverError invokes ResolverError for the newest load balancer.
+//
+// There is no point in invoking ResolverError for older load balancers
+// since they've already completed resolving.
 func (t *teleportPickHealthyBalancer) ResolverError(err error) {
 	bal := t.newestBalancer()
 
@@ -112,6 +138,7 @@ func (t *teleportPickHealthyBalancer) ResolverError(err error) {
 	bal.ResolverError(err)
 }
 
+// UpdateClientConnState is responsible for enabling health checking for the underlying pick_first_leaf load balancers.
 func (t *teleportPickHealthyBalancer) UpdateClientConnState(state balancer.ClientConnState) error {
 	bal := t.newestBalancer()
 
@@ -126,6 +153,7 @@ func (t *teleportPickHealthyBalancer) UpdateClientConnState(state balancer.Clien
 	return bal.UpdateClientConnState(state)
 }
 
+// UpdateSubConnState forwards the state update to the corresponding balancer controlling the provided [balancer.SubConn].
 func (t *teleportPickHealthyBalancer) UpdateSubConnState(sc balancer.SubConn, scs balancer.SubConnState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -146,11 +174,11 @@ func (t *teleportPickHealthyBalancer) UpdateSubConnState(sc balancer.SubConn, sc
 		delete(bal.subConns, sc)
 	}
 
-	// Do not invoke bal.UpdateSubConnState since the pick_first_leaf does not exist UpdateSubConnState to be invoked,
-	// since it uses state listeners instead.
-	// bal.UpdateSubConnState(sc, scs)
+	// Do not invoke bal.UpdateSubConnState since the pick_first_leaf does not expect UpdateSubConnState to be invoked,
+	// since it uses state listeners instead. Invoking will only emit error logs from the pick_first_leaf load balancer.
 }
 
+// newestBalancer returns the pending load balancer if existing, otherwise the current load balancer is returned.
 func (t *teleportPickHealthyBalancer) newestBalancer() balancer.Balancer {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -162,6 +190,7 @@ func (t *teleportPickHealthyBalancer) newestBalancer() balancer.Balancer {
 	return t.current
 }
 
+// wrappedBalancer is responsible for wrapping a [balancer.Balancer] and [balancer.SubConn]
 type wrappedBalancer struct {
 	balancer.ClientConn
 	balancer.Balancer
@@ -172,6 +201,9 @@ type wrappedBalancer struct {
 	subConns map[balancer.SubConn]bool
 }
 
+// Close will shutdown all registered subconnections.
+//
+// This is a graceful shutdown, so any active RPCs are waited on before shutting down the subconnection entirely.
 func (t *wrappedBalancer) Close() {
 	if t == nil {
 		return
@@ -182,6 +214,11 @@ func (t *wrappedBalancer) Close() {
 	}
 }
 
+// NewSubConn registers created [balancer.SubConn] by the balancer, so that [teleportPickHealthyBalancer] can know which
+// balancer created the subconnection for forwarding events to.
+//
+// This also registers a health listener so that [teleportPickHealthyBalancer] can know when the new subconnection has reached
+// a ready state.
 func (t *wrappedBalancer) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
 	t.tlb.mu.Lock()
 
@@ -214,6 +251,7 @@ func (t *wrappedBalancer) NewSubConn(addrs []resolver.Address, opts balancer.New
 	return sc, nil
 }
 
+// ResolveNow only invokes ResolveNow if the balancer is the newest load balancer.
 func (t *wrappedBalancer) ResolveNow(opts resolver.ResolveNowOptions) {
 	if t != t.tlb.newestBalancer() {
 		return
@@ -222,10 +260,12 @@ func (t *wrappedBalancer) ResolveNow(opts resolver.ResolveNowOptions) {
 	t.tlb.cc.ResolveNow(opts)
 }
 
+// RemoveSubConn shuts down the provided [balancer.SubConn]
 func (t *wrappedBalancer) RemoveSubConn(sc balancer.SubConn) {
 	sc.Shutdown()
 }
 
+// UpdateAddresses invokes UpdateAddresses if the balancer is not a stale balancer.
 func (t *wrappedBalancer) UpdateAddresses(sc balancer.SubConn, addrs []resolver.Address) {
 	t.tlb.mu.Lock()
 	if t != t.tlb.current && t != t.tlb.pending {
@@ -238,7 +278,9 @@ func (t *wrappedBalancer) UpdateAddresses(sc balancer.SubConn, addrs []resolver.
 	t.tlb.cc.UpdateAddresses(sc, addrs)
 }
 
+// UpdateState handles creating new pick_first_leaf balancers in the case one becomes unhealthy.
 func (t *wrappedBalancer) UpdateState(state balancer.State) {
+	// TODO(dustin.specker): refactor to remove nesting and simply unlocking mutex
 	t.tlb.mu.Lock()
 
 	if t != t.tlb.current && t != t.tlb.pending {
@@ -265,6 +307,7 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 
 			t.tlb.mu.Unlock()
 
+			// TODO(dustin.specker): do we need to enable health listener here?
 			pflb.UpdateClientConnState(balancer.ClientConnState{
 				ResolverState: pickfirstleaf.EnableHealthListener(t.tlb.resolvedState),
 			})
@@ -320,6 +363,7 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 
 			t.tlb.mu.Unlock()
 
+			// TODO(dustin.specker): do we need to enable health listener here?
 			pflb.UpdateClientConnState(balancer.ClientConnState{
 				ResolverState: pickfirstleaf.EnableHealthListener(t.tlb.resolvedState),
 			})
