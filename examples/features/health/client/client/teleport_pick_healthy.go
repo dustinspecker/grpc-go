@@ -55,19 +55,7 @@ func (teleportPickHealthyBuilder) Build(cc balancer.ClientConn, opts balancer.Bu
 		log:  log,
 	}
 
-	wb := wrappedBalancer{
-		ClientConn: cc,
-		log:        log,
-
-		tlb:      &b,
-		subConns: make(map[balancer.SubConn]bool, 0),
-	}
-
-	pflb := balancer.Get(pickfirstleaf.Name).Build(&wb, opts)
-
-	wb.Balancer = pflb
-
-	b.current = &wb
+	b.current = newWrappedBalancer(&b)
 
 	return &b
 }
@@ -223,6 +211,26 @@ type wrappedBalancer struct {
 	subConns map[balancer.SubConn]bool
 }
 
+// newWrappedBalancer returns a wrapped pick_first_leaf balancer.
+//
+// It is up to the user to invoke UpdateClientConnState on the returned wrappedBalancer
+// to cause the underlying pick_first_leaf balancer to create a new [balancer.SubConn].
+func newWrappedBalancer(tphb *teleportPickHealthyBalancer) *wrappedBalancer {
+	wb := wrappedBalancer{
+		ClientConn: tphb.cc,
+		log:        tphb.log,
+
+		tlb:      tphb,
+		subConns: make(map[balancer.SubConn]bool, 0),
+	}
+
+	pflb := balancer.Get(pickfirstleaf.Name).Build(&wb, tphb.opts)
+
+	wb.Balancer = pflb
+
+	return &wb
+}
+
 // Close will shutdown all registered subconnections.
 //
 // This is a graceful shutdown, so any active RPCs are waited on before shutting down the subconnection entirely.
@@ -303,25 +311,15 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 	case t.tlb.current:
 		if state.ConnectivityState == connectivity.TransientFailure {
 			t.log.InfoContext(context.Background(), "creating new balancer")
-			wb := wrappedBalancer{
-				ClientConn: t.tlb.cc,
-				log:        t.log,
+			wb := newWrappedBalancer(t.tlb)
 
-				tlb:      t.tlb,
-				subConns: make(map[balancer.SubConn]bool, 0),
-			}
-
-			pflb := balancer.Get(pickfirstleaf.Name).Build(&wb, t.tlb.opts)
-
-			wb.Balancer = pflb
-
-			t.tlb.pending = &wb
+			t.tlb.pending = wb
 
 			resolvedState := t.tlb.resolvedState
 
 			t.tlb.mu.Unlock()
 
-			pflb.UpdateClientConnState(balancer.ClientConnState{
+			wb.UpdateClientConnState(balancer.ClientConnState{
 				ResolverState: pickfirstleaf.EnableHealthListener(resolvedState),
 			})
 		} else if state.ConnectivityState == connectivity.Ready && t.tlb.pending != nil {
@@ -361,25 +359,15 @@ func (t *wrappedBalancer) UpdateState(state balancer.State) {
 
 			t.tlb.mu.Lock()
 
-			wb := wrappedBalancer{
-				ClientConn: t.tlb.cc,
-				log:        t.log,
+			wb := newWrappedBalancer(t.tlb)
 
-				tlb:      t.tlb,
-				subConns: make(map[balancer.SubConn]bool, 0),
-			}
-
-			pflb := balancer.Get(pickfirstleaf.Name).Build(&wb, t.tlb.opts)
-
-			wb.Balancer = pflb
-
-			t.tlb.pending = &wb
+			t.tlb.pending = wb
 
 			resolvedState := t.tlb.resolvedState
 
 			t.tlb.mu.Unlock()
 
-			pflb.UpdateClientConnState(balancer.ClientConnState{
+			wb.UpdateClientConnState(balancer.ClientConnState{
 				ResolverState: pickfirstleaf.EnableHealthListener(resolvedState),
 			})
 		default:
