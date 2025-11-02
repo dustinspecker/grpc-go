@@ -83,13 +83,15 @@ func (teleportPickHealthyBuilder) Name() string {
 // aaddress/endpoint is tried again. This provides the opportunity for the load balancer to forward the request to another server.
 type teleportPickHealthyBalancer struct {
 	// cc and opts are used for creating new pick_first_leaf load balancers
+	// cc and opts are never written once configured in [teleportPickHealthyBuilder.Build]
 	cc   balancer.ClientConn
 	opts balancer.BuildOptions
 
 	log *slog.Logger
 
 	// mu lock should be held before accessing resolvedState or current/pending balancers
-	mu            sync.Mutex
+	mu sync.Mutex
+	// resolvedState is used when creating new pick_first_leaf_balancers
 	resolvedState resolver.State
 	current       *wrappedBalancer
 	pending       *wrappedBalancer
@@ -156,9 +158,9 @@ func (t *teleportPickHealthyBalancer) UpdateClientConnState(state balancer.Clien
 
 	t.mu.Lock()
 	t.resolvedState = state.ResolverState
+	t.mu.Unlock()
 
 	state.ResolverState = pickfirstleaf.EnableHealthListener(state.ResolverState)
-	t.mu.Unlock()
 
 	return bal.UpdateClientConnState(state)
 }
