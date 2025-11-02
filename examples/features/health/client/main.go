@@ -32,6 +32,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/examples/features/health/client/client"
 	pb "google.golang.org/grpc/examples/features/proto/echo"
 	_ "google.golang.org/grpc/health"
 )
@@ -41,7 +42,7 @@ var serviceConfig = fmt.Sprintf(`{
 	"healthCheckConfig": {
 		"serviceName": ""
 	}
-}`, Name)
+}`, client.Name)
 
 func callUnaryEcho(ctx context.Context, c pb.EchoClient) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
